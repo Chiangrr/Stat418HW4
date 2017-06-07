@@ -1,0 +1,350 @@
+---
+title: "Stat418HW4"
+author: "Ruifu Jiang"
+output: html_document
+---
+
+# Abstract
+
+The main puropose of this homework is analyzing the dataset about salary with several machine learning methods. Applying what we learned in calss on sovling real issues is always a good way of better understanding knowledge.
+
+# Executive Summary
+
+The dataset is from https://archive.ics.uci.edu/ml/datasets/Adult. There are totally 32561 observations in this dataset. Each observation includes the age, workclass, fnlwgt, education, education-num, marital-status, occupation, relationship, race, sex, capital-gain, capital-loss, hours-per-week, native-country, and annual salary. 7841 records show annual salary greater than 50K and 24720 records show not greater than 50K.  
+The main purpose is to demonstrate the influence of each predictor variable on annual salary whether greater than 50K or not by using machine learning. The methods includes logistic regression, random forest, gradient boosted machine with random search, neural network, and ensembing models. Among all of these methods, AUC is used as a metric for model goodness.
+
+# Dataset
+
+The response variable is the annual salary, individuals earn greater than 50K are marked as "1", the others are marked as "0".  
+
+In terms of predictor varibales, fnlwgt is the number fo people the census takere believe that obsevation represents, the education_num is the highest level of education in numerical form. These two variables is meaningless and make the model more complicated. Hence they are elimated from the dataset. Below is the summary of the rest dataset.
+
+```{r, echo=F}
+col_names <- c("age", "workclass", "fnlwgt", "education", "education_num", "marital-status", "occupation", "relationship", "race", "sex", "capital-gain", "capital-loss", "hours-per-week", "native-country","Y")
+adult.data<- read.csv("/Users/Ruifu/Downloads/adult.data.csv", header = FALSE, col.names = col_names)
+
+adult.data$Y<- as.character(adult.data$Y)
+adult.data$Y<- ifelse(adult.data$Y ==" >50K",1,0)
+adult.data[["fnlwgt"]]=NULL
+adult.data[["education_num"]]=NULL
+
+summary(adult.data)
+```
+
+In order to have a better understanding of this data, each predictor variables is ploted below. 
+
+```{r, echo=F}
+library(ggplot2)
+adult.data$Y = as.character(adult.data$Y)
+
+p1 = qplot(adult.data$age, data = adult.data, fill = adult.data$Y)
+
+p2 = qplot(adult.data$workclass, data = adult.data, fill = adult.data$Y)
+
+p3 = qplot(adult.data$education, data = adult.data, fill = adult.data$Y)
+
+p4 = qplot(adult.data$marital.status, data = adult.data, fill = adult.data$Y)
+
+p5 = qplot(adult.data$occupation, data = adult.data, fill = adult.data$Y)
+
+p6 = qplot(adult.data$relationship, data = adult.data, fill = adult.data$Y)
+
+p7 = qplot(adult.data$race, data = adult.data, fill = adult.data$Y)
+
+p8 = qplot(adult.data$sex, data = adult.data, fill = adult.data$Y)
+
+multiplot <- function(..., plotlist = NULL, file, cols = 1, layout = NULL) {
+  require(grid)
+
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  if (is.null(layout)) {
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                 ncol = cols, nrow = ceiling(numPlots/cols))
+}
+
+if (numPlots == 1) {
+print(plots[[1]])
+
+} else {
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+for (i in 1:numPlots) {
+  matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+  print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                  layout.pos.col = matchidx$col))
+ }
+}
+ }
+multiplot(p1, p2, p3, p4)
+multiplot(p4, p5, p6, p7)
+```
+
+# Data Split
+
+The dataset was randmly selected into three groups, 60% as train set, 20% as validation set, and 20% as test set.
+
+```{r, echo=F}
+set.seed(123)
+N <- nrow(adult.data)
+idx <- sample(seq(1, 3), size = N, replace = TRUE, prob = c(.6, .2, .2))
+adult_train <- adult.data[idx == 1,]
+adult_vali<- adult.data[idx == 2,]
+adult_test <- adult.data[idx == 3,]
+
+```
+
+# Statistical Analysis
+
+## 1 Logistic Regression
+
+```{r, echo=F, results="hide", message=F}
+library(glmnet)
+adult.data$Y = as.numeric(adult.data$Y)
+set.seed(123)
+N <- nrow(adult.data)
+idx <- sample(seq(1, 3), size = N, replace = TRUE, prob = c(.6, .2, .2))
+adult_train <- adult.data[idx == 1,]
+adult_vali<- adult.data[idx == 2,]
+adult_test <- adult.data[idx == 3,]
+X <- Matrix::sparse.model.matrix(Y ~ . - 1, data = adult.data)
+X_train <- X[idx == 1,]
+X_vali<- X[idx == 2,]
+X_test <- X[idx == 3,]
+cv.glmnet(X_train, adult_train$Y)
+```
+
+```{r, echo=F, message=F}
+m1 = glmnet( X_train, adult_train$Y, family = "binomial", lambda = 0.0002853608)
+library(ROCR)
+phat <- predict(m1, newx = X_test, type = "response")
+rocr_pred <- prediction(phat, adult_test$Y)
+m1
+performance(rocr_pred, "auc")@y.values[[1]]
+plot(performance(rocr_pred, "tpr", "fpr"), colorize = T)
+```
+
+First is to try the logestic regression with the best lambda 0.0002853608.    
+
+The AUC is 0.9034696 and it's close to 1 which means this model is a good fit.  
+As we can see from the plot, when the true positive rate increases, the false positive rate increases as well. The AUC is the area under the curve. As long as the area close to 1, it becomes easier to find a point where the true positive rate is high and the false positive rate is low.
+
+
+## 2 Random Forest
+
+```{r, echo=F, message=F, results="hide"}
+library(h2o)
+h2o.init(nthreads=-1)
+adult.data$Y = as.factor(adult.data$Y)
+dx <- as.h2o(adult.data)
+
+dx_split <- h2o.splitFrame(dx, ratios = c(0.6, 0.2), seed = 123)
+dx_train <- dx_split[[1]]
+dx_valid <- dx_split[[2]]
+dx_test <- dx_split[[3]]
+Xnames <- names(dx_train)[which(names(dx_train)!="Y")]
+```
+
+```{r, echo=F}
+m2 <- h2o.randomForest(x = Xnames, y = "Y", training_frame = dx_train, ntrees = 500)
+m2
+h2o.auc(h2o.performance(m2, dx_test))
+```
+
+Then try to build model with Random Forest method. The AUC is 0.9099084 which is also close to 1.
+
+## 3. Gradient Boosted Machine
+
+The third method is Generalized Boosted Regression Modeling. The AUC is 0.9123521.
+
+```{r, echo=F}
+m3 <- h2o.gbm(x = Xnames, y = "Y", training_frame = dx_train, distribution = "bernoulli", 
+                ntrees = 300, max_depth = 20, learn_rate = 0.1, 
+                nbins = 100, seed = 123)
+m3
+h2o.auc(h2o.performance(m3, dx_test))
+```
+
+
+```{r, results="hide", echo=F}
+hyper_params <- list( ntrees = 10000,
+                     max_depth = 5:15, 
+                     min_rows = c(1,3,10,30,100),
+                     learn_rate = c(0.01,0.03,0.1),  
+                     learn_rate_annealing = c(0.99,0.995,1,1),
+                     sample_rate = c(0.4,0.7,1,1),
+                     col_sample_rate = c(0.7,1,1),
+                     nbins = c(30,100,300),
+                     nbins_cats = c(64,256,1024)
+)
+
+search_criteria <- list( strategy = "RandomDiscrete",
+                        max_runtime_secs = 10*3600,
+                        max_models = 100
+)
+mds <- h2o.grid(algorithm = "gbm", grid_id = "grd",
+                  x = Xnames, y = "Y", training_frame = dx_train,
+                  validation_frame = dx_valid,
+                  hyper_params = hyper_params,
+                  search_criteria = search_criteria,
+                  stopping_metric = "AUC", stopping_tolerance = 1e-3, stopping_rounds = 2,
+                  seed = 123)
+mds_sort <- h2o.getGrid(grid_id = "grd", sort_by = "auc", decreasing = TRUE)
+m4<-h2o.getModel(mds_sort@model_ids[[1]])
+```
+
+For this part, random search is good method to try hyperparameter optimization for GBM. Below is the best model with appropriate hyperparameter, and the AUC is 0.9187166.
+
+```{r, echo=F}
+m4
+h2o.auc(h2o.performance(m4, dx_test))
+```
+
+
+## 4. Neural Network
+
+The last method is using neural network for deep learning. There are totally 21 test models including various architectures and tricks with early stopping. Select the best one who has the largest AUC.
+
+```{r, echo=F, results="hide"}
+m51 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid,epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0)
+h2o.performance(m51, dx_test)@metrics$AUC
+
+m52 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid,activation = "Rectifier", hidden = c(50,50,50,50), input_dropout_ratio = 0.2, epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(m52, dx_test)@metrics$AUC
+
+m53 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid,activation = "Rectifier", hidden = c(50,50,50,50), epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(m53, dx_test)@metrics$AUC
+
+m54 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(20,20), epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0)
+h2o.performance(m54, dx_test)@metrics$AUC
+
+m55 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(20), epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0)
+h2o.performance(m55, dx_test)@metrics$AUC
+
+m56 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(5), epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0)
+h2o.performance(m56, dx_test)@metrics$AUC
+
+m57 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(1), epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0)
+h2o.performance(m57, dx_test)@metrics$AUC
+
+m58 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(200,200), l1 = 1e-5, l2 = 1e-5, epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0)
+h2o.performance(m58, dx_test)@metrics$AUC
+
+m59 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "RectifierWithDropout", hidden = c(200,200,200,200), hidden_dropout_ratios=c(0.2,0.1,0.1,0), epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0)
+h2o.performance(m59, dx_test)@metrics$AUC
+
+m510 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(200,200), rho = 0.95, epsilon = 1e-06, epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(m510, dx_test)@metrics$AUC
+
+m511 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(200,200), rho = 0.999, epsilon = 1e-08, epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(m511, dx_test)@metrics$AUC
+
+m512 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(200,200), rho = 0.9999, epsilon = 1e-08, epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0)
+h2o.performance(m512, dx_test)@metrics$AUC
+
+m513 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(200,200), rho = 0.999, epsilon = 1e-06, epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(m513, dx_test)@metrics$AUC
+
+m514 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(200,200), rho = 0.999, epsilon = 1e-09, epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(m514, dx_test)@metrics$AUC
+
+m515<- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(200,200), adaptive_rate = FALSE, epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0)
+h2o.performance(m515, dx_test)@metrics$AUC
+
+m516 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(200,200), adaptive_rate = FALSE, rate = 0.001, momentum_start = 0.5, momentum_ramp = 1e5, momentum_stable = 0.99, epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(m516, dx_test)@metrics$AUC
+
+m517 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(200,200), adaptive_rate = FALSE, rate = 0.01, momentum_start = 0.5, momentum_ramp = 1e5, momentum_stable = 0.99, epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0)
+h2o.performance(m517, dx_test)@metrics$AUC
+
+m518 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid, activation = "Rectifier", hidden = c(200,200), adaptive_rate = FALSE, rate = 0.01, rate_annealing = 1e-05, momentum_start = 0.5, momentum_ramp = 1e5, momentum_stable = 0.99, epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0)
+h2o.performance(m518, dx_test)@metrics$AUC
+
+m519 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid,
+            activation = "Rectifier", hidden = c(200,200), 
+            adaptive_rate = FALSE, rate = 0.01, rate_annealing = 1e-04, 
+            momentum_start = 0.5, momentum_ramp = 1e5, momentum_stable = 0.99,
+            epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0)
+h2o.performance(m519, dx_test)@metrics$AUC
+
+m520 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid,
+            activation = "Rectifier", hidden = c(200,200), 
+            adaptive_rate = FALSE, rate = 0.01, rate_annealing = 1e-05, 
+            momentum_start = 0.5, momentum_ramp = 1e5, momentum_stable = 0.9,
+            epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0) 
+h2o.performance(m520, dx_test)@metrics$AUC
+
+m521 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, validation_frame = dx_valid,
+            activation = "Rectifier", hidden = c(200,200), 
+            adaptive_rate = FALSE, rate = 0.01, rate_annealing = 1e-05, 
+            momentum_start = 0.5, momentum_ramp = 1e4, momentum_stable = 0.9,
+            epochs = 100, stopping_rounds = 2, stopping_metric = "AUC", stopping_tolerance = 0)
+h2o.performance(m521, dx_test)@metrics$AUC
+```
+```{r,echo=F}
+
+m519
+
+```
+
+
+
+
+## Ensembling Model
+
+The last step is ensembling 4 models from each method. And the coefficient of best ensembling model is showed below.
+
+```{r, echo=F, results="hide"}
+md1 <- h2o.glm(x = Xnames, y = "Y", training_frame = dx_train, 
+                family = "binomial", 
+                alpha = 1, lambda = 0,
+                seed = 123,
+                nfolds = 5, fold_assignment = "Modulo", keep_cross_validation_predictions = TRUE)
+
+md2 <- h2o.randomForest(x = Xnames, y = "Y", training_frame = dx_train, 
+                ntrees = 300,
+                seed = 123,
+                nfolds = 5, fold_assignment = "Modulo", keep_cross_validation_predictions = TRUE)
+
+md3 <- h2o.gbm(x = Xnames, y = "Y", training_frame = dx_train, distribution = "bernoulli", 
+                ntrees = 200, max_depth = 10, learn_rate = 0.1, 
+                nbins = 100, seed = 123,
+                nfolds = 5, fold_assignment = "Modulo", keep_cross_validation_predictions = TRUE)
+
+md4 <- h2o.deeplearning(x = Xnames, y = "Y", training_frame = dx_train, 
+            epochs = 5,
+            seed = 123,
+            nfolds = 5, fold_assignment = "Modulo", keep_cross_validation_predictions = TRUE)
+
+md_ens <- h2o.stackedEnsemble(x = Xnames, y = "Y", training_frame = dx_train, 
+                    base_models = list(md1@model_id, md2@model_id, md3@model_id, md4@model_id))
+
+h2o.auc(h2o.performance(md1, dx_test))
+h2o.auc(h2o.performance(md2, dx_test))
+h2o.auc(h2o.performance(md3, dx_test))
+h2o.auc(h2o.performance(md4, dx_test))
+h2o.auc(h2o.performance(md_ens, dx_test))
+```
+
+```{r, echo=F}
+
+
+h2o.getModel(md_ens@model$metalearner$name)@model$coefficients_table
+
+```
+
+# Conclusion
+
+The eaist method is logistic regression, it ran fast and the test AUC is close to 1.  
+The random forest ran much slower than logistic regression, but it provided a higher AUC.  
+The GBM provided the highest AUC, but the con of GBM is that it's easily to be overfitted. It's better to add an early stopping to avoid the overfit. And the hyperparameter choosen with random search cost a very long time.  
+Neural netwoking also provided a good performance, but it's very complicated to set so many hyperparameters and it maybe show more advatages if the dataset is pretty big.  
+Comparing those four methods, ensembling those them is a very good choice for this analysis. It gave each model a weight and combine them all to build a better model.
+
+
+
+
